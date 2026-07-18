@@ -174,3 +174,16 @@ For 24/7 uptime you'll want to host this somewhere rather than running it on
 your own machine — Railway, Render, or a small VPS all work well for a
 polling-based bot like this. Let me know when you're ready and I can walk
 through deployment options.
+
+### Render-specific note: Python version
+
+Render defaults new services to the latest available Python (currently
+3.14), but `python-telegram-bot`'s polling mode isn't compatible with how
+3.13+ handles `asyncio.get_event_loop()` — you may see:
+```
+RuntimeError: There is no current event loop in thread 'MainThread'.
+```
+This repo includes a `runtime.txt` pinning Python to `3.11.9`, which Render
+reads automatically — just make sure it's committed alongside the other
+files. `bot.py` also has a small safety-net fix for this at startup, so it
+should work even if a future Python bump reintroduces the issue.
