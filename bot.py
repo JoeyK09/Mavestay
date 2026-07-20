@@ -666,6 +666,37 @@ async def _confirm_booking_payment(context: ContextTypes.DEFAULT_TYPE, booking_i
     return "\n".join(result_lines)
 
 
+async def whoami_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Anyone can run this — shows their chat ID and whether it currently
+    matches ADMIN_CHAT_ID, so admin setup issues are a 5-second check
+    instead of a guessing game."""
+    chat_id = update.effective_chat.id
+    if not ADMIN_CHAT_ID:
+        await update.message.reply_text(
+            f"Your chat ID: `{chat_id}`\n\n"
+            f"⚠️ ADMIN_CHAT_ID isn't set at all on the server. Set it to this "
+            f"number in your environment variables and redeploy to unlock "
+            f"admin commands here.",
+            parse_mode="Markdown",
+        )
+        return
+
+    if str(chat_id) == str(ADMIN_CHAT_ID):
+        await update.message.reply_text(
+            f"Your chat ID: `{chat_id}`\n✅ This matches ADMIN_CHAT_ID — admin commands should work here.",
+            parse_mode="Markdown",
+        )
+    else:
+        await update.message.reply_text(
+            f"Your chat ID: `{chat_id}`\n"
+            f"Configured ADMIN_CHAT_ID: `{ADMIN_CHAT_ID}`\n\n"
+            f"❌ These don't match, so admin commands (/pending, /confirmpayment) "
+            f"are silently ignored here. Update ADMIN_CHAT_ID to `{chat_id}` "
+            f"and redeploy if this is meant to be your admin chat.",
+            parse_mode="Markdown",
+        )
+
+
 async def confirmpayment_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin-only: /confirmpayment <booking_id>"""
     if not _is_admin(update):
@@ -805,6 +836,7 @@ def main():
     app.add_handler(CommandHandler("mybookings", mybookings_command))
     app.add_handler(CommandHandler("referral", referral_command))
     app.add_handler(CommandHandler("confirmpayment", confirmpayment_command))
+    app.add_handler(CommandHandler("whoami", whoami_command))
     app.add_handler(inquiry_conv)
     app.add_handler(CallbackQueryHandler(set_language_callback, pattern=r"^setlang_"))
     app.add_handler(CallbackQueryHandler(list_country_properties, pattern=r"^country_"))
