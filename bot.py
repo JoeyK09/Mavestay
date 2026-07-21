@@ -67,6 +67,7 @@ logger = logging.getLogger(__name__)
 
 # Conversation states
 NAME, PHONE, CHECKIN, CHECKOUT, GUESTS = range(5)
+HOST_NAME, HOST_PROPERTY, HOST_LOCATION, HOST_PRICE, HOST_BEDROOMS, HOST_DESC, HOST_CONTACT = range(5, 12)
 
 
 def lang_for(update: Update) -> str:
@@ -139,6 +140,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE,
         [InlineKeyboardButton(t(lang, "menu_favorites"), callback_data="favorites")],
         [InlineKeyboardButton(t(lang, "menu_bookings"), callback_data="my_bookings")],
         [InlineKeyboardButton(t(lang, "menu_referral"), callback_data="referral")],
+        [InlineKeyboardButton(t(lang, "menu_host"), callback_data="become_host")],
         [InlineKeyboardButton(t(lang, "menu_contact"), callback_data="contact")],
         [InlineKeyboardButton(t(lang, "menu_language"), callback_data="change_language")],
     ]
@@ -167,6 +169,8 @@ async def main_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await my_bookings(update, context)
     elif query.data == "referral":
         await show_referral(update, context)
+    elif query.data == "become_host":
+        await show_host_intro(update, context)
     elif query.data == "contact":
         keyboard = [[InlineKeyboardButton(t(lang, "back_to_menu"), callback_data="back_to_menu")]]
         await query.edit_message_text(
@@ -373,6 +377,182 @@ async def referral_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = lang_for(update)
     user_id = update.message.from_user.id
     await _send_referral_text(update, context, lang, user_id, edit=False)
+
+
+# ---------- Become a Host ----------
+
+async def show_host_intro(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = lang_for(update)
+    owner_share = round((1 - MAVESTAY_COMMISSION_RATE) * 100)
+
+    keyboard = [
+        [InlineKeyboardButton(t(lang, "host_apply_button"), callback_data="host_apply")],
+        [InlineKeyboardButton(t(lang, "host_airbnb_button"), url=AIRBNB_URL)],
+        [InlineKeyboardButton(t(lang, "back_to_menu"), callback_data="back_to_menu")],
+    ]
+    await update.callback_query.edit_message_text(
+        t(lang, "host_intro", owner_share=owner_share),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown",
+    )
+
+
+async def host_apply_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    lang = lang_for(update)
+    context.user_data["host_app"] = {}
+    await query.edit_message_text(t(lang, "host_ask_name"))
+    return HOST_NAME
+
+
+async def host_get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = lang_for(update)
+    context.user_data["host_app"]["owner_name"] = update.message.text
+    await update.message.reply_text(t(lang, "host_ask_property_name"))
+    return HOST_PROPERTY
+
+
+async def host_get_property_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = lang_for(update)
+    context.user_data["host_app"]["property_name"] = update.message.text
+    await update.message.reply_text(t(lang, "host_ask_location"))
+    return HOST_LOCATION
+
+
+async def host_get_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = lang_for(update)
+    text = update.message.text
+    if "," not in text:
+        await update.message.reply_text(t(lang, "host_location_invalid"))
+        return HOST_LOCATION
+    city, country = text.split(",", 1)
+    context.user_data["host_app"]["city"] = city.strip()
+    context.user_data["host_app"]["country"] = country.strip()
+    await update.message.reply_text(t(lang, "host_ask_price"))
+    return HOST_PRICE
+
+
+async def host_get_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = lang_for(update)
+    try:
+        price = float(update.message.text)
+    except ValueError:
+        await update.message.reply_text(t(lang, "host_price_invalid"))
+        return HOST_PRICE
+    context.user_data["host_app"]["price_per_night"] = price
+    await update.message.reply_text(t(lang, "host_ask_bedrooms"))
+    return HOST_BEDROOMS
+
+
+async def host_get_bedrooms(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = lang_for(update)
+    try:
+        bedrooms = int(update.message.text)
+    except ValueError:
+        await update.message.reply_text(t(lang, "host_bedrooms_invalid"))
+        return HOST_BEDROOMS
+    context.user_data["host_app"]["bedrooms"] = bedrooms
+    await update.message.reply_text(t(lang, "host_ask_description"))
+    return HOST_DESC
+
+
+async def host_get_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = lang_for(update)
+    context.user_data["host_app"]["description"] = update.message.text
+    await update.message.reply_text(t(lang, "host_ask_contact"))
+    return HOST_CONTACT
+
+
+async def host_get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = lang_for(update)
+    app_data = context.user_data["host_app"]
+    app_data["contact"] = update.message.text
+
+    user = update.message.from_user
+    application_id = db.create_host_application(
+        telegram_user_id=user.id,
+        telegram_username=user.username or "",
+        owner_name=app_data["owner_name"],
+        property_name=app_data["property_name"],
+        city=app_data["city"],
+        country=app_data["country"],
+        price_per_night=app_data["price_per_night"],
+        bedrooms=app_data["bedrooms"],
+        description=app_data["description"],
+        contact=app_data["contact"],
+    )
+
+    await update.message.reply_text(
+        t(lang, "host_application_success", property=app_data["property_name"]),
+        parse_mode="Markdown",
+    )
+
+    if ADMIN_CHAT_ID:
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text=(
+                    f"🏠 New host application #{application_id}\n"
+                    f"Owner: {app_data['owner_name']} ({app_data['contact']})\n"
+                    f"Telegram: @{user.username or user.id}\n"
+                    f"Property: {app_data['property_name']}\n"
+                    f"Location: {app_data['city']}, {app_data['country']}\n"
+                    f"Price: ${app_data['price_per_night']:.0f}/night, {app_data['bedrooms']} bedroom(s)\n"
+                    f"Description: {app_data['description']}\n\n"
+                    f"Review with /hostapplications, then onboard with add_property() once vetted."
+                ),
+            )
+        except Exception as e:
+            logger.warning(f"Could not notify admin: {e}")
+
+    context.user_data.pop("host_app", None)
+    return ConversationHandler.END
+
+
+async def cancel_host_application(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = lang_for(update)
+    context.user_data.pop("host_app", None)
+    await update.message.reply_text(t(lang, "inquiry_cancelled"))
+    return ConversationHandler.END
+
+
+async def hostapplications_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin-only: /hostapplications — lists pending host applications with
+    a one-tap button to mark each as reviewed once you've followed up."""
+    if not _is_admin(update):
+        return
+
+    applications = db.get_host_applications("pending")
+    if not applications:
+        await update.message.reply_text("No pending host applications. ✅")
+        return
+
+    for a in applications:
+        text = (
+            f"*Application #{a['id']}*\n"
+            f"Owner: {a['owner_name']} ({a['contact']})\n"
+            f"Telegram: @{a['telegram_username'] or a['telegram_user_id']}\n"
+            f"Property: {a['property_name']}\n"
+            f"Location: {a['city']}, {a['country']}\n"
+            f"Price: ${a['price_per_night']:.0f}/night, {a['bedrooms']} bedroom(s)\n"
+            f"Description: {a['description']}"
+        )
+        keyboard = [[InlineKeyboardButton("✅ Mark reviewed", callback_data=f"hostreview_{a['id']}")]]
+        await update.message.reply_text(
+            text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown"
+        )
+
+
+async def hostreview_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not _is_admin(update):
+        await query.answer()
+        return
+    await query.answer()
+    application_id = int(query.data.split("_")[1])
+    db.set_host_application_status(application_id, "reviewed")
+    await query.edit_message_text(f"✅ Application #{application_id} marked as reviewed.")
 
 
 # ---------- My bookings ----------
@@ -831,13 +1011,30 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel_inquiry)],
     )
 
+    host_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(host_apply_start, pattern=r"^host_apply$")],
+        states={
+            HOST_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, host_get_name)],
+            HOST_PROPERTY: [MessageHandler(filters.TEXT & ~filters.COMMAND, host_get_property_name)],
+            HOST_LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, host_get_location)],
+            HOST_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, host_get_price)],
+            HOST_BEDROOMS: [MessageHandler(filters.TEXT & ~filters.COMMAND, host_get_bedrooms)],
+            HOST_DESC: [MessageHandler(filters.TEXT & ~filters.COMMAND, host_get_description)],
+            HOST_CONTACT: [MessageHandler(filters.TEXT & ~filters.COMMAND, host_get_contact)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel_host_application)],
+    )
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("language", language_command))
     app.add_handler(CommandHandler("mybookings", mybookings_command))
     app.add_handler(CommandHandler("referral", referral_command))
     app.add_handler(CommandHandler("confirmpayment", confirmpayment_command))
+    app.add_handler(CommandHandler("pending", pending_command))
+    app.add_handler(CommandHandler("hostapplications", hostapplications_command))
     app.add_handler(CommandHandler("whoami", whoami_command))
     app.add_handler(inquiry_conv)
+    app.add_handler(host_conv)
     app.add_handler(CallbackQueryHandler(set_language_callback, pattern=r"^setlang_"))
     app.add_handler(CallbackQueryHandler(list_country_properties, pattern=r"^country_"))
     app.add_handler(CallbackQueryHandler(view_property, pattern=r"^view_\d+$"))
@@ -845,6 +1042,8 @@ def main():
     app.add_handler(CallbackQueryHandler(booking_com_placeholder, pattern=r"^booking_\d+$"))
     app.add_handler(CallbackQueryHandler(select_payment_method, pattern=r"^pay_(crypto|paypal|airtm|mpesa)_\d+$"))
     app.add_handler(CallbackQueryHandler(mark_paid_pending, pattern=r"^paid_\d+$"))
+    app.add_handler(CallbackQueryHandler(confirmpay_callback, pattern=r"^confirmpay_\d+$"))
+    app.add_handler(CallbackQueryHandler(hostreview_callback, pattern=r"^hostreview_\d+$"))
     app.add_handler(CallbackQueryHandler(main_menu_router))
 
     logger.info("MaveStay bot starting...")
